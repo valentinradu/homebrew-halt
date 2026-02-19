@@ -1,0 +1,92 @@
+name: Update formula
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch:           # allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch latest Halt release
+        id: release
+        run: |
+          DATA=$(curl -sf https://api.github.com/repos/valentinradu/Halt/releases/latest)
+          TAG=$(echo "$DATA" | jq -r '.tag_name')
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if formula is already up to date
+        id: check
+        run: |
+          CURRENT=$(grep -E '^\s+version ' Formula/halt.rb | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "none")
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "${{ steps.release.outputs.version }}" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download macOS tarballs and compute sha256
+        if: steps.check.outputs.up_to_date == 'false'
+        id: shas
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          BASE="https://github.com/valentinradu/Halt/releases/download/$TAG"
+          curl -sfL "$BASE/halt-x86_64-apple-darwin.tar.gz"   -o x86.tar.gz
+          curl -sfL "$BASE/halt-aarch64-apple-darwin.tar.gz"  -o arm.tar.gz
+          echo "x86_sha=$(sha256sum x86.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "arm_sha=$(sha256sum arm.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Update Formula/halt.rb
+        if: steps.check.outputs.up_to_date == 'false'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          X86_SHA: ${{ steps.shas.outputs.x86_sha }}
+          ARM_SHA: ${{ steps.shas.outputs.arm_sha }}
+        run: |
+          cat > Formula/halt.rb <<EOF
+          class Halt < Formula
+            desc "Wrap any process in a filesystem and network sandbox"
+            homepage "https://github.com/valentinradu/Halt"
+            version "$VERSION"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/valentinradu/Halt/releases/download/$TAG/halt-aarch64-apple-darwin.tar.gz"
+                sha256 "$ARM_SHA"
+              else
+                url "https://github.com/valentinradu/Halt/releases/download/$TAG/halt-x86_64-apple-darwin.tar.gz"
+                sha256 "$X86_SHA"
+              end
+            end
+
+            def install
+              bin.install "halt"
+            end
+
+            test do
+              system bin/"halt", "check"
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/halt.rb
+          git commit -m "halt ${{ steps.release.outputs.tag }}"
+          git push
