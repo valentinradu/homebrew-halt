@@ -1,9 +1,9 @@
 name: Update formula
 
 on:
-  schedule:
-    - cron: "0 * * * *"   # every hour
-  workflow_dispatch:           # allow manual trigger
+  repository_dispatch:
+    types: [halt_release_published]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,9 +17,15 @@ jobs:
 
       - name: Fetch latest Halt release
         id: release
+        env:
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
         run: |
-          DATA=$(curl -sf https://api.github.com/repos/valentinradu/Halt/releases/latest)
-          TAG=$(echo "$DATA" | jq -r '.tag_name')
+          if [ -n "${DISPATCH_TAG:-}" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            DATA=$(curl -sf https://api.github.com/repos/valentinradu/Halt/releases/latest)
+            TAG=$(echo "$DATA" | jq -r '.tag_name')
+          fi
           VERSION="${TAG#v}"
           echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
